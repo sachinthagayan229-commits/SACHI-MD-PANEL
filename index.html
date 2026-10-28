@@ -27,5 +27,4 @@ async function api(path,options={}){const c=cfg();if(!c.url||!c.password)throw E
 function setMessage(t){document.getElementById('message').textContent=t;}
 async function refreshStatus(){setMessage('Connecting…');try{const d=await api('/api/status');document.getElementById('status').textContent=d.status||'Unknown';document.getElementById('statusNote').textContent=d.createdAt?'Latest deployment created: '+d.createdAt:'Backend connected';setMessage('Connected');}catch(e){setMessage('Error: '+e.message);}}
 async function doAction(action){const msg=action==='stop'?'STOP the configured Railway deployment':action==='restart'?'RESTART the configured Railway deployment':'trigger a new deployment for the configured service';if(!confirm('Are you sure you want to '+msg+'?'))return;setMessage('Sending '+action+'…');try{const d=await api('/api/'+action,{method:'POST'});setMessage(d.message||'Request sent');setTimeout(refreshStatus,2500);}catch(e){setMessage('Error: '+e.message);}}
-async function loadLogs(){const el=document.getElementById('logs');el.textContent='Loading logs…';try{const d=await api('/api/logs');el.textContent=(d.logs||[]).map(x=>typeof x==='string'?x:JSON.stringify(x)).join('\n')||'No log lines returned.';}catch(e){el.textContent='Logs unavailable: '+e.message;}}
-</script></body></html>
+async function
