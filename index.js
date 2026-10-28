@@ -1,124 +1,110 @@
+
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
+import os from "node:os";
 
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
-const API_URL = "https://backboard.railway.com/graphql/v2";
+const logs = [];
+
+function addLog(message) {
+  const line = `${new Date().toISOString()} ${message}`;
+  logs.push(line);
+  if (logs.length > 100) logs.shift();
+  console.log(line);
+}
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "10kb" }));
 
-const origins = (process.env.ALLOWED_ORIGINS || "")
-  .split(",").map(x => x.trim()).filter(Boolean);
+const origins = (
+  process.env.ALLOWED_ORIGINS ||
+  "https://sachinthagayan90-hue.github.io"
+).split(",").map(x => x.trim()).filter(Boolean);
+
 app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (origins.length === 0 || origins.includes(origin)) return cb(null, true);
-    return cb(new Error("Origin not allowed"));
+  origin(origin, callback) {
+    if (!origin || origins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Origin not allowed"));
   }
 }));
 
-function requireAuth(req, res, next) {
-  const secret = process.env.PANEL_PASSWORD;
-  if (!secret) return res.status(503).json({ error: "Backend setup incomplete: PANEL_PASSWORD is missing." });
-  const header = req.get("authorization") || "";
-  const given = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (given.length !== secret.length || !constantTimeEqual(given, secret)) {
-    return res.status(401).json({ error: "Incorrect panel password." });
+function safeEqual(a, b) {
+  let result = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    result |= (a.charCodeAt(i) || 0) ^
+      (b.charCodeAt(i) || 0);
   }
-  next();
-}
-function constantTimeEqual(a, b) {
-  let result = 0;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) result |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return result === 0;
 }
-function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing Railway Variable: ${name}`);
-  return value;
-}
-async function railway(query, variables = {}) {
-  const token = required("RAILWAY_API_TOKEN");
-  const r = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-    body: JSON.stringify({ query, variables })
-  });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok || body.errors?.length) {
-    const message = body.errors?.map(x => x.message).join("; ") || `Railway API HTTP ${r.status}`;
-    throw new Error(message);
+
+function requireAuth(req, res, next) {
+  const password = process.env.PANEL_PASSWORD;
+
+  if (!password) {
+    return res.status(503).json({
+      error: "PANEL_PASSWORD is not configured"
+    });
   }
-  return body.data;
+
+  const header = req.get("authorization") || "";
+  const supplied = header.startsWith("Bearer ")
+    ? header.slice(7)
+    : "";
+
+  if (!safeEqual(supplied, password)) {
+    return res.status(401).json({
+      error: "Incorrect panel password"
+    });
+  }
+
+  next();
 }
-function target() {
-  return {
-    projectId: required("RAILWAY_PROJECT_ID"),
-    serviceId: required("RAILWAY_SERVICE_ID"),
-    environmentId: required("RAILWAY_ENVIRONMENT_ID")
-  };
-}
-async function getLatestDeployment() {
-  const t = target();
-  const data = await railway(
-    `query($input: DeploymentListInput!) {
-      deployments(input: $input, first: 1) {
-        edges { node { id status createdAt url } }
-      }
-    }`,
-    { input: t }
-  );
-  return data.deployments?.edges?.[0]?.node || null;
-}
-app.get("/health", (_req, res) => res.json({ ok: true, service: "SACHI-MD-PANEL-API" }));
-app.get("/api/status", requireAuth, async (_req, res) => {
-  try {
-    const d = await getLatestDeployment();
-    res.json({ connected: true, status: d?.status || "NO_DEPLOYMENT", deploymentId: d?.id || null, createdAt: d?.createdAt || null, url: d?.url || null });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "SACHI-MD-PANEL"
+  });
 });
-app.post("/api/restart", requireAuth, async (_req, res) => {
-  try {
-    const d = await getLatestDeployment();
-    if (!d) return res.status(404).json({ error: "No deployment found for configured service." });
-    await railway(`mutation($id: String!) { deploymentRestart(id: $id) }`, { id: d.id });
-    res.json({ ok: true, message: "Restart request sent to Railway." });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+
+app.get("/api/status", requireAuth, (req, res) => {
+  const memory = process.memoryUsage();
+
+  res.json({
+    connected: true,
+    status: "ONLINE",
+    mode: "Panel only - no bot connected",
+    uptimeSeconds: Math.floor(process.uptime()),
+    startedAt: new Date().toISOString(),
+    nodeVersion: process.version,
+    platform: process.platform,
+    processMemoryMB: Math.round(
+      memory.rss / 1024 / 1024
+    ),
+    totalMemoryMB: Math.round(
+      os.totalmem() / 1024 / 1024
+    ),
+    freeMemoryMB: Math.round(
+      os.freemem() / 1024 / 1024
+    )
+  });
 });
-app.post("/api/stop", requireAuth, async (_req, res) => {
-  try {
-    const d = await getLatestDeployment();
-    if (!d) return res.status(404).json({ error: "No deployment found for configured service." });
-    await railway(`mutation($id: String!) { deploymentStop(id: $id) }`, { id: d.id });
-    res.json({ ok: true, message: "Stop request sent to Railway." });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+
+app.get("/api/logs", requireAuth, (req, res) => {
+  res.json({ logs: logs.slice(-100) });
 });
-app.post("/api/start", requireAuth, async (_req, res) => {
-  try {
-    const t = target();
-    await railway(
-      `mutation($input: EnvironmentTriggersDeployInput!) { environmentTriggersDeploy(input: $input) }`,
-      { input: t }
-    );
-    res.json({ ok: true, message: "Deploy request sent to Railway." });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+
+app.use((err, req, res, next) => {
+  addLog(`Error: ${err.message || "Unknown error"}`);
+  res.status(400).json({
+    error: err.message || "Request error"
+  });
 });
-app.get("/api/logs", requireAuth, async (_req, res) => {
-  try {
-    const d = await getLatestDeployment();
-    if (!d) return res.status(404).json({ error: "No deployment found for configured service." });
-    const data = await railway(
-      `query($deploymentId: String!, $limit: Int) {
-        deploymentLogs(deploymentId: $deploymentId, limit: $limit) {
-          timestamp message severity
-        }
-      }`,
-      { deploymentId: d.id, limit: 100 }
-    );
-    res.json({ logs: data.deploymentLogs || [] });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+
+app.listen(PORT, "0.0.0.0", () => {
+  addLog(`Panel API started on port ${PORT}`);
 });
-app.use((err, _req, res, _next) => res.status(400).json({ error: err.message || "Request error" }));
-app.listen(PORT, "0.0.0.0", () => console.log(`Panel API listening on ${PORT}`));
